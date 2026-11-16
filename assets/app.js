@@ -9,6 +9,7 @@
 
   let token = "";
   let adminConnected = false;
+  let viewerConnected = false;
   let releases = [];
   const $ = (id) => document.getElementById(id);
 
@@ -116,6 +117,7 @@
   }
 
   async function refresh() {
+    if (!viewerConnected && !adminConnected) return;
     setMessage("status", "Loading published programs...");
     try {
       const result = [];
@@ -285,8 +287,10 @@
     if (!adminMode) {
       token = "";
       adminConnected = false;
+      viewerConnected = true;
       $("uploader").hidden = true;
-      setMessage("status", "Viewer mode: public downloads require no token.");
+      $("library").hidden = false;
+      setMessage("status", "Viewer connected. Loading releases...");
       await refresh();
       return;
     }
@@ -299,12 +303,16 @@
       // Check repo access. GitHub enforces actual write permissions on upload requests.
       await api("");
       adminConnected = true;
+      viewerConnected = true;
+      $("library").hidden = false;
       $("uploader").hidden = false;
       setMessage("status", "Admin connected. Upload requires Contents: Read and write permission.");
       await refresh();
     } catch (error) {
       token = "";
       adminConnected = false;
+      viewerConnected = false;
+      $("library").hidden = true;
       $("uploader").hidden = true;
       setMessage("status", error.message, true);
     }
@@ -314,7 +322,7 @@
     const required = [
       "auth", "token", "admin", "disconnect", "uploader", "upload", "archive",
       "uploadBtn", "uploadStatus", "status", "search", "filter", "refresh",
-      "releases", "series", "model", "kind", "version", "comments", "manualLink"
+      "releases", "library", "series", "model", "kind", "version", "comments", "manualLink"
     ];
     const missing = required.filter((id) => !$(id));
     if (missing.length) {
@@ -322,19 +330,24 @@
       return;
     }
     $("uploader").hidden = true;
+    $("library").hidden = true;
     $("auth").addEventListener("submit", connectAdmin);
     $("disconnect").addEventListener("click", () => {
       token = "";
       adminConnected = false;
+      viewerConnected = false;
+      releases = [];
+      $("releases").replaceChildren();
+      $("library").hidden = true;
       $("token").value = "";
       $("uploader").hidden = true;
-      setMessage("status", "Admin disconnected. Public downloads remain available.");
+      setMessage("status", "Disconnected. Connect to view releases.");
     });
     $("refresh").addEventListener("click", refresh);
     $("search").addEventListener("input", displayReleases);
     $("filter").addEventListener("change", displayReleases);
     $("upload").addEventListener("submit", upload);
-    refresh();
+    setMessage("status", "Select Viewer or Admin mode and click Connect to view releases.");
   }
 
   if (document.readyState === "loading") {
