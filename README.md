@@ -1,34 +1,27 @@
 # Industrial Program Portal — elabnpd
 
-## Repositories
+## Two repositories
 
-1. **Public** `elabnpd/industrial-program-portal`: upload `index.html`, `assets/`, `.github/workflows/deploy.yml` and this README. Enable Settings → Pages → Source: GitHub Actions.
-2. **Private** `elabnpd/industrial-program-storage`: upload the **contents** of `storage-workflow/` (including `.github/workflows/publish-program.yml` and `scripts/publish.py`). Ensure the default branch is `main`. In Settings → Actions → General, allow workflow read and write permissions (or configure appropriate token permissions).
+**Public** `elabnpd/industrial-program-portal`: copy `index.html`, `assets/`, `.github/workflows/deploy.yml` here.
 
-## Admin upload
+**Private** `elabnpd/industrial-program-storage`: copy the CONTENTS of `storage-workflow/` here, specifically `.github/workflows/publish.yml` and `scripts/publish.py`. Do not copy `storage-workflow` as a nested folder.
 
-Create a new fine-grained personal access token scoped **only** to the private storage repository with **Contents: Read and write**. In the portal, tick Admin publishing mode and connect with that token. Choose Series, Model, Program Type, Version, comments and archive. Upload limit: 10 MiB. The portal stages the file and manifest in a single Git commit; the private repository's GitHub Actions workflow validates the archive and creates a Release.
+## Setup
 
-**Important:** GitHub Pages is public. The admin token exists in the browser's JavaScript memory and may be exposed to malicious browser extensions, XSS, or an untrusted computer. Do not use shared computers. Never paste tokens in chat, logs or public source. For stronger security or large uploads, use a real authenticated backend instead of this static-only design. Revoking previously exposed tokens is essential.
+1. On the public repository, Settings > Pages > Source: GitHub Actions. Push to `main`, and check Actions.
+2. On the private repository, Settings > Actions > General > Workflow permissions: Read and write permissions.
+3. Create a NEW fine-grained token for the private storage repository only. For admin uploads: Contents Read and write; for browsing: Contents Read-only. Never paste a token into chat or source code. Revoke any previously exposed token.
+4. Open the Pages site. Select Admin mode, enter token, connect, and upload a small archive.
+5. Watch the private repository's `Publish Staged Program` action. When it succeeds, refresh releases in the portal.
 
-## Viewer access
+## Upload conventions
 
-A viewer token requires Contents: Read-only. On a **personal GitHub Free** private repository, collaborators generally have write access, so viewer-only GitHub permissions cannot be guaranteed. Do not share your admin token. Consider an organization repository with granular roles or a secure backend for production team access.
+Series `M`, `5M`, `I`, `Ir`, `MMD`; Model `1W+1S`, `2W+1S`, etc.; Program Type `HMI` or `PLC`; Version `1.0.0`; comments required.
 
-## Archive limitations
+Release tag example: `M-1W1S-HMI-v1.0.0`. Each upload accepts one `.zip`, `.rar`, `.7z`, `.tar`, `.tar.gz`, `.tgz`, `.gz`, `.bz2`, or `.xz` file, maximum 10 MiB.
 
-Accepted extensions: `.zip`, `.rar`, `.7z`, `.tar`, `.tar.gz`, `.tgz`, `.gz`, `.bz2`, `.xz`. The publishing workflow checks file magic bytes, size and metadata, but does **not** perform malware scanning or fully extract/test every archive. Archives can contain executable content; verify trusted sources.
+## Important limitations
 
-## Release tags
+The public Pages frontend is not private. The GitHub token is held in JavaScript memory, not persisted, but browser extensions or compromised client devices can access it. GitHub Free personal private repositories do not provide true viewer-only collaborator roles. Do not distribute your personal token. Publishing via the browser is a prototype and is not suitable for high-security or large industrial archives. The staging commit temporarily stores the archive in Git history; deleting the staging path does NOT remove it from Git history. GitHub Releases are also retained. Avoid confidential material unless company policy approves this architecture.
 
-Examples: `M-1W1S-HMI-v1.0.0`, `M-1W1S-PLC-v1.1.0`, `5M-2W1S-HMI-v2.0.0`.
-
-## Known limits
-
-- Browser API upload has a 10 MiB limit; GitHub's API may impose stricter practical constraints.
-- Releases are shown from the first 100 returned by the GitHub API; pagination is not implemented.
-- GitHub Pages deployment requires Pages to be enabled before `configure-pages` runs.
-- The browser asset download endpoint may have CORS limitations; if a download fails, use the authenticated GitHub release page.
-- Git commits preserve staged archive history even after workflow cleanup; this is private storage, not secure erasure. Storage grows with each upload.
-- Concurrent uploads can produce a ref-update conflict; retry after the previous upload finishes.
-- The upload status reports staging, not publication; check the private repository's Actions tab to confirm release creation.
+The publishing action validates archive signatures, not full malware scanning or exhaustive archive integrity. No real-time per-user download audit is provided.

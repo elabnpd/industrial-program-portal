@@ -1,64 +1,173 @@
-'use strict';
-const OWNER='elabnpd', REPO='industrial-program-storage', API=`https://api.github.com/repos/${OWNER}/${REPO}`;
-const $=id=>document.getElementById(id);
-let token='';
-const enc=new TextEncoder();
-function msg(id,value,error=false){$(id).textContent=value;$(id).className=error?'error':'success'}
-async function gh(path,options={}){
-  const response=await fetch(path.startsWith('https://')?path:`${API}${path}`,{
-    ...options,headers:{'Accept':'application/vnd.github+json','Authorization':`Bearer ${token}`,'X-GitHub-Api-Version':'2022-11-28',...(options.headers||{})}
-  });
-  if(!response.ok){let detail='';try{detail=(await response.json()).message||''}catch{}throw new Error(`GitHub API ${response.status}: ${detail||response.statusText}`)}
-  if(response.status===204)return null;
-  return response.json();
-}
-function safe(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function decodeTag(tag){const m=/^(.+)-([0-9]+W[0-9]+S)-(HMI|PLC)-v(\d+\.\d+\.\d+)$/i.exec(tag);return m?{series:m[1],model:m[2].replace('W','W+'),kind:m[3].toUpperCase(),version:m[4]}:null}
-async function load(){if(!token)return;msg('status','Loading releases…');try{
-  const releases=await gh('/releases?per_page=100');
-  const q=$('search').value.trim().toLowerCase(),kind=$('filter').value;
-  const filtered=releases.filter(r=>{const t=decodeTag(r.tag_name);return t&&(!kind||t.kind===kind)&&`${r.name} ${r.tag_name} ${r.body}`.toLowerCase().includes(q)});
-  $('releases').innerHTML=filtered.length?'':'<p class="muted">No matching releases. Publish a version to see it here.</p>';
-  for(const r of filtered){const t=decodeTag(r.tag_name);const box=document.createElement('article');box.className='release';
-    box.innerHTML=`<h3>${safe(t.series)} Series — ${safe(t.model)} — ${safe(t.kind)} — v${safe(t.version)}</h3><p class="muted">${safe(r.author?.login||'Unknown')} • ${safe(r.published_at||r.created_at||'')}</p><p>${safe(r.body||'No upload comments')}</p>`;
-    for(const a of r.assets||[]){const b=document.createElement('button');b.textContent=`Download ${a.name}`;b.onclick=()=>downloadAsset(a);box.appendChild(b)}
-    $('releases').appendChild(box);
-  }msg('status',`Connected to ${OWNER}/${REPO}. ${releases.length} release(s) found.`)
-}catch(e){msg('status',e.message,true)}}
-async function downloadAsset(asset){try{
- const response=await fetch(asset.url,{headers:{Authorization:`Bearer ${token}`,Accept:'application/octet-stream','X-GitHub-Api-Version':'2022-11-28'}});
- if(!response.ok)throw new Error(`Download failed (${response.status}). Open the release on GitHub if your browser blocks this download.`);
- const blob=await response.blob();if(blob.type.includes('json'))throw new Error('GitHub returned metadata instead of the archive. Use the GitHub release page to download.');
- const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=asset.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)
-}catch(e){msg('status',e.message,true)}}
-$('auth').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();$('token').value='';$('uploader').hidden=!$('admin').checked;await load()});
-$('disconnect').onclick=()=>{token='';$('token').value='';$('uploader').hidden=true;$('releases').replaceChildren();msg('status','Disconnected')};
-$('refresh').onclick=load;$('search').oninput=()=>{if(token)load()};$('filter').onchange=load;
-const extensions=['.zip','.rar','.7z','.tar','.tar.gz','.tgz','.gz','.bz2','.xz'];
-function base64(bytes){let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(binary)}
-$('upload').addEventListener('submit',async e=>{e.preventDefault();if(!token)return msg('uploadStatus','Connect with an admin token first.',true);
- const file=$('archive').files[0];if(!file)return;
- const lower=file.name.toLowerCase();if(!extensions.some(ext=>lower.endsWith(ext)))return msg('uploadStatus','Unsupported archive extension.',true);
- if(file.size>10*1024*1024)return msg('uploadStatus','Maximum archive size is 10 MiB for this GitHub-only upload method.',true);
- if(!file.size)return msg('uploadStatus','Archive is empty.',true);
- const series=$('series').value,model=$('model').value,kind=$('kind').value,version=$('version').value.trim();
- const tag=`${series}-${model.replace('+','')}-${kind}-v${version}`;
- const comment=$('comments').value.trim();if(!comment)return msg('uploadStatus','Upload comments are required.',true);
- $('uploadBtn').disabled=true;msg('uploadStatus','Checking version and preparing upload…');
- try{
-   const ref=await gh('/git/ref/heads/main');
-   const check=await fetch(`${API}/releases/tags/${encodeURIComponent(tag)}`,{headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json'}});
-   if(check.ok)throw new Error(`Version ${tag} already exists.`);
-   if(check.status!==404)throw new Error(`Could not verify release: HTTP ${check.status}`);
-   const id=crypto.randomUUID(),path=`incoming/${id}/${file.name}`;
-   const manifest={tag,series,model,kind,version,comments:comment,filename:file.name,asset_path:path};
-   // Stage the binary and its manifest in one commit to ensure the workflow sees both.
-   const blob=await gh('/git/blobs',{method:'POST',body:JSON.stringify({content:base64(new Uint8Array(await file.arrayBuffer())),encoding:'base64'})});
-   const metadata=await gh('/git/blobs',{method:'POST',body:JSON.stringify({content:JSON.stringify(manifest,null,2),encoding:'utf-8'})});
-   const commit=await gh(`/git/commits/${ref.object.sha}`);
-   const tree=await gh('/git/trees',{method:'POST',body:JSON.stringify({base_tree:commit.tree.sha,tree:[{path,mode:'100644',type:'blob',sha:blob.sha},{path:`incoming/${id}/manifest.json`,mode:'100644',type:'blob',sha:metadata.sha}]})});
-   const newCommit=await gh('/git/commits',{method:'POST',body:JSON.stringify({message:`stage program ${tag}`,tree:tree.sha,parents:[ref.object.sha]})});
-   await gh('/git/refs/heads/main',{method:'PATCH',body:JSON.stringify({sha:newCommit.sha,force:false})});
-   msg('uploadStatus',`Upload staged successfully. GitHub Actions will publish ${tag}. Refresh releases after the workflow finishes.`);$('upload').reset();
- }catch(err){msg('uploadStatus',err.message,true)}finally{$('uploadBtn').disabled=false}
-});
+"use strict";
+(() => {
+  const OWNER = "elabnpd";
+  const REPO = "industrial-program-storage";
+  const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
+  const MAX_SIZE = 10 * 1024 * 1024;
+  const EXTS = [".tar.gz", ".zip", ".rar", ".7z", ".tar", ".tgz", ".gz", ".bz2", ".xz"];
+  let token = "";
+  let releases = [];
+  const $ = (id) => document.getElementById(id);
+  const setMessage = (id, message, isError = false) => {
+    const el = $(id);
+    if (el) { el.textContent = message; el.className = isError ? "error" : "success"; }
+  };
+  function tagInfo(tag) {
+    const m = /^(.+)-([0-9]+W[0-9]+S)-(HMI|PLC)-v([0-9]+\.[0-9]+\.[0-9]+)$/i.exec(tag || "");
+    if (!m) return null;
+    return { series: m[1], model: m[2].replace("W", "W+").replace(/S$/, "S"), type: m[3].toUpperCase(), version: m[4] };
+  }
+  async function api(url, opts = {}) {
+    if (!token) throw new Error("Connect using your GitHub token first.");
+    const headers = { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", ...opts.headers };
+    const res = await fetch(url.startsWith("https://") ? url : `${API}${url}`, { ...opts, headers });
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.json()).message || ""; } catch (_) {}
+      if (res.status === 404) throw new Error(`GitHub 404: Check that ${OWNER}/${REPO} exists and your token is authorized for this private repository.`);
+      if (res.status === 401) throw new Error("GitHub 401: Token invalid, revoked, or expired.");
+      if (res.status === 403) throw new Error("GitHub 403: Insufficient permission, rate limit, or repository policy.");
+      throw new Error(`GitHub ${res.status}: ${detail || res.statusText}`);
+    }
+    return res.status === 204 ? null : res.json();
+  }
+  function displayReleases() {
+    const target = $("releases");
+    target.replaceChildren();
+    const query = $("search").value.trim().toLowerCase();
+    const filter = $("filter").value;
+    const matches = releases.filter((r) => {
+      const t = tagInfo(r.tag_name);
+      return t && (!filter || t.type === filter) &&
+        `${t.series} ${t.model} ${t.type} ${t.version} ${r.body || ""}`.toLowerCase().includes(query);
+    });
+    if (!matches.length) {
+      const p = document.createElement("p"); p.className = "muted";
+      p.textContent = releases.length ? "No programs match your search." : "No published program releases yet.";
+      target.append(p); return;
+    }
+    for (const release of matches) {
+      const t = tagInfo(release.tag_name);
+      const card = document.createElement("article"); card.className = "release";
+      const title = document.createElement("h3");
+      title.textContent = `${t.series} Series / ${t.model} / ${t.type} / v${t.version}`;
+      const meta = document.createElement("p"); meta.className = "muted";
+      meta.textContent = `Uploaded by ${release.author?.login || "Unknown"} • ${release.published_at ? new Date(release.published_at).toLocaleString() : "Unknown date"}`;
+      const comments = document.createElement("p"); comments.textContent = release.body || "No upload comments";
+      card.append(title, meta, comments);
+      const assets = (release.assets || []).filter((a) => EXTS.some((ext) => a.name.toLowerCase().endsWith(ext)));
+      for (const asset of assets) {
+        const button = document.createElement("button"); button.type = "button";
+        button.textContent = `Download ${asset.name}`;
+        button.addEventListener("click", () => downloadAsset(asset, release.html_url));
+        card.append(button);
+      }
+      const link = document.createElement("a"); link.href = release.html_url; link.target = "_blank"; link.rel = "noopener noreferrer";
+      link.textContent = "Open release on GitHub"; card.append(link);
+      target.append(card);
+    }
+  }
+  async function refresh() {
+    if (!token) return setMessage("status", "Connect first.", true);
+    setMessage("status", "Loading releases...");
+    try {
+      await api(""); // Verify private repository access before loading releases.
+      const result = [];
+      for (let page = 1; page <= 5; page++) {
+        const chunk = await api(`/releases?per_page=100&page=${page}`);
+        result.push(...chunk);
+        if (chunk.length < 100) break;
+      }
+      releases = result;
+      displayReleases();
+      setMessage("status", `Connected to ${OWNER}/${REPO}. ${releases.length} published release(s).`);
+    } catch (err) { setMessage("status", err.message, true); }
+  }
+  async function downloadAsset(asset, releaseUrl) {
+    setMessage("status", `Downloading ${asset.name}...`);
+    try {
+      const response = await fetch(asset.url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/octet-stream", "X-GitHub-Api-Version": "2022-11-28" }
+      });
+      if (!response.ok) throw new Error(`Download HTTP ${response.status}`);
+      const blob = await response.blob();
+      if (blob.type.includes("json")) throw new Error("GitHub returned metadata instead of an archive.");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = asset.name;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      setMessage("status", `Download started: ${asset.name}`);
+    } catch (err) {
+      setMessage("status", `${err.message}. Use the release link while signed in to GitHub: ${releaseUrl}`, true);
+    }
+  }
+  function toBase64(bytes) {
+    let output = "";
+    for (let i = 0; i < bytes.length; i += 8192) output += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(output);
+  }
+  async function upload(e) {
+    e.preventDefault();
+    if (!token || !$("admin").checked) return setMessage("uploadStatus", "Connect in Admin mode first.", true);
+    const file = $("archive").files[0];
+    if (!file) return setMessage("uploadStatus", "Choose an archive.", true);
+    if (!EXTS.some((ext) => file.name.toLowerCase().endsWith(ext))) return setMessage("uploadStatus", "Unsupported archive extension.", true);
+    if (!file.size || file.size > MAX_SIZE) return setMessage("uploadStatus", "Archive must be between 1 byte and 10 MiB.", true);
+    const series = $("series").value.trim();
+    const model = $("model").value.trim();
+    const type = $("kind").value;
+    const version = $("version").value.trim();
+    const comments = $("comments").value.trim();
+    if (!/^[A-Za-z0-9_-]+$/.test(series) || !/^\d+W\+\d+S$/.test(model) || !/^\d+\.\d+\.\d+$/.test(version) || !comments)
+      return setMessage("uploadStatus", "Check Series, Model, Version, and Comments.", true);
+    const tag = `${series}-${model.replace("+", "")}-${type}-v${version}`;
+    const button = $("uploadBtn"); button.disabled = true;
+    setMessage("uploadStatus", "Checking version and staging archive...");
+    try {
+      const existing = await fetch(`${API}/releases/tags/${encodeURIComponent(tag)}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }
+      });
+      if (existing.ok) throw new Error(`Release ${tag} already exists.`);
+      if (existing.status !== 404) throw new Error(`Cannot verify release (${existing.status}).`);
+      const ref = await api("/git/ref/heads/main");
+      const commit = await api(`/git/commits/${ref.object.sha}`);
+      const id = crypto.randomUUID();
+      const path = `incoming/${id}/${file.name}`;
+      const manifest = { tag, series, model, kind: type, version, comments, filename: file.name, asset_path: path };
+      const archiveBlob = await api("/git/blobs", { method: "POST", body: JSON.stringify({ content: toBase64(new Uint8Array(await file.arrayBuffer())), encoding: "base64" }) });
+      const metaBlob = await api("/git/blobs", { method: "POST", body: JSON.stringify({ content: JSON.stringify(manifest, null, 2), encoding: "utf-8" }) });
+      const tree = await api("/git/trees", { method: "POST", body: JSON.stringify({ base_tree: commit.tree.sha, tree: [
+        { path, mode: "100644", type: "blob", sha: archiveBlob.sha },
+        { path: `incoming/${id}/manifest.json`, mode: "100644", type: "blob", sha: metaBlob.sha }
+      ] }) });
+      const nextCommit = await api("/git/commits", { method: "POST", body: JSON.stringify({ message: `Stage program ${tag}`, tree: tree.sha, parents: [ref.object.sha] }) });
+      await api("/git/refs/heads/main", { method: "PATCH", body: JSON.stringify({ sha: nextCommit.sha, force: false }) });
+      $("upload").reset();
+      setMessage("uploadStatus", `Staged ${tag}. Wait for the private repository's Publish Staged Program action, then click Refresh releases.`);
+    } catch (err) { setMessage("uploadStatus", err.message, true); }
+    finally { button.disabled = false; }
+  }
+  function init() {
+    const ids = ["auth", "token", "admin", "disconnect", "uploader", "upload", "archive", "uploadBtn", "uploadStatus", "status", "search", "filter", "refresh", "releases", "series", "model", "kind", "version", "comments"];
+    const missing = ids.filter((id) => !$(id));
+    if (missing.length) { console.error("Portal HTML and JavaScript versions do not match. Missing IDs:", missing.join(", ")); return; }
+    $("auth").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      token = $("token").value.trim();
+      $("token").value = "";
+      $("uploader").hidden = !$("admin").checked;
+      await refresh();
+    });
+    $("disconnect").addEventListener("click", () => {
+      token = ""; releases = []; $("token").value = "";
+      $("uploader").hidden = true; $("releases").replaceChildren();
+      setMessage("status", "Disconnected.");
+    });
+    $("refresh").addEventListener("click", refresh);
+    $("search").addEventListener("input", displayReleases);
+    $("filter").addEventListener("change", displayReleases);
+    $("upload").addEventListener("submit", upload);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true });
+  else init();
+})();
