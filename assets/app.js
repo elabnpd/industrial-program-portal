@@ -3,7 +3,8 @@
   const OWNER = "elabnpd";
   const REPO = "industrial-program-storage";
   const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
-  const MAX_SIZE = 10 * 1024 * 1024;
+  const STAGING_MAX = 10 * 1024 * 1024;
+  const MAX_SIZE = 100 * 1000 * 1000;
   const EXTS = [".tar.gz", ".zip", ".rar", ".7z", ".tar", ".tgz", ".gz", ".bz2", ".xz"];
   let token = "";
   let releases = [];
@@ -112,7 +113,7 @@
     const file = $("archive").files[0];
     if (!file) return setMessage("uploadStatus", "Choose an archive.", true);
     if (!EXTS.some((ext) => file.name.toLowerCase().endsWith(ext))) return setMessage("uploadStatus", "Unsupported archive extension.", true);
-    if (!file.size || file.size > MAX_SIZE) return setMessage("uploadStatus", "Archive must be between 1 byte and 10 MiB.", true);
+    if (!file.size || file.size > MAX_SIZE) return setMessage("uploadStatus", "Archive must be between 1 byte and 100 MB.", true);
     const series = $("series").value.trim();
     const model = $("model").value.trim();
     const type = $("kind").value;
@@ -122,6 +123,7 @@
       return setMessage("uploadStatus", "Check Series, Model, Version, and Comments.", true);
     const tag = `${series}-${model.replace("+", "")}-${type}-v${version}`;
     const button = $("uploadBtn"); button.disabled = true;
+    $("manualLink").hidden = true;
     setMessage("uploadStatus", "Checking version and staging archive...");
     try {
       const existing = await fetch(`${API}/releases/tags/${encodeURIComponent(tag)}`, {
@@ -129,6 +131,35 @@
       });
       if (existing.ok) throw new Error(`Release ${tag} already exists.`);
       if (existing.status !== 404) throw new Error(`Cannot verify release (${existing.status}).`);
+      if (file.size > STAGING_MAX) {
+        // The Git data API staging path is intentionally restricted to small files.
+        // GitHub's release upload host may reject cross-origin browser requests.
+        setMessage("uploadStatus", `Trying direct GitHub Release upload for ${(file.size / 1e6).toFixed(1)} MB...`);
+        let release;
+        try {
+          release = await api("/releases", { method: "POST", body: JSON.stringify({
+            tag_name: tag, target_commitish: "main", name: `${series} / ${model} / ${type} / v${version}`,
+            body: comments, draft: true, prerelease: false
+          }) });
+          const uploadUrl = release.upload_url.split("{")[0] + `?name=${encodeURIComponent(file.name)}`;
+          const uploadResponse = await fetch(uploadUrl, {
+            method: "POST", headers: {
+              Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream",
+              Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"
+            }, body: file
+          });
+          if (!uploadResponse.ok) throw new Error(`Asset upload HTTP ${uploadResponse.status}`);
+          await api(`/releases/${release.id}`, { method: "PATCH", body: JSON.stringify({ draft: false }) });
+          setMessage("uploadStatus", `Published ${tag}. Click Refresh releases.`);
+          await refresh();
+        } catch (error) {
+          // Never publish an empty draft. Keep it for the admin to complete manually.
+          const url = release?.html_url || `https://github.com/${OWNER}/${REPO}/releases/new`;
+          const link = $("manualLink"); link.href = url; link.hidden = false;
+          setMessage("uploadStatus", `Browser upload failed (${error.message}). GitHub may block cross-origin release uploads. Use the manual GitHub Release link below to attach the archive (GitHub sign-in required for this fallback).`, true);
+        }
+        return;
+      }
       const ref = await api("/git/ref/heads/main");
       const commit = await api(`/git/commits/${ref.object.sha}`);
       const id = crypto.randomUUID();
@@ -148,7 +179,7 @@
     finally { button.disabled = false; }
   }
   function init() {
-    const ids = ["auth", "token", "admin", "disconnect", "uploader", "upload", "archive", "uploadBtn", "uploadStatus", "status", "search", "filter", "refresh", "releases", "series", "model", "kind", "version", "comments"];
+    const ids = ["auth", "token", "admin", "disconnect", "uploader", "upload", "archive", "uploadBtn", "uploadStatus", "status", "search", "filter", "refresh", "releases", "series", "model", "kind", "version", "comments", "manualLink"];
     const missing = ids.filter((id) => !$(id));
     if (missing.length) { console.error("Portal HTML and JavaScript versions do not match. Missing IDs:", missing.join(", ")); return; }
     $("auth").addEventListener("submit", async (e) => {
