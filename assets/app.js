@@ -19,13 +19,13 @@
     return { series: m[1], model: m[2].replace("W", "W+").replace(/S$/, "S"), type: m[3].toUpperCase(), version: m[4] };
   }
   async function api(url, opts = {}) {
-    if (!token) throw new Error("Connect using your GitHub token first.");
-    const headers = { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", ...opts.headers };
+    if (!token && opts.method && opts.method.toUpperCase() !== "GET") throw new Error("Admin token required for changes.");
+    const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...opts.headers };
     const res = await fetch(url.startsWith("https://") ? url : `${API}${url}`, { ...opts, headers });
     if (!res.ok) {
       let detail = "";
       try { detail = (await res.json()).message || ""; } catch (_) {}
-      if (res.status === 404) throw new Error(`GitHub 404: Check that ${OWNER}/${REPO} exists and your token is authorized for this private repository.`);
+      if (res.status === 404) throw new Error(`GitHub 404: Check that ${OWNER}/${REPO} is public and the requested resource exists.`);
       if (res.status === 401) throw new Error("GitHub 401: Token invalid, revoked, or expired.");
       if (res.status === 403) throw new Error("GitHub 403: Insufficient permission, rate limit, or repository policy.");
       throw new Error(`GitHub ${res.status}: ${detail || res.statusText}`);
@@ -69,10 +69,10 @@
     }
   }
   async function refresh() {
-    if (!token) return setMessage("status", "Connect first.", true);
+    
     setMessage("status", "Loading releases...");
     try {
-      await api(""); // Verify private repository access before loading releases.
+      await api(""); // Verify repository access; public listing works without a token.
       const result = [];
       for (let page = 1; page <= 5; page++) {
         const chunk = await api(`/releases?per_page=100&page=${page}`);
@@ -81,26 +81,24 @@
       }
       releases = result;
       displayReleases();
-      setMessage("status", `Connected to ${OWNER}/${REPO}. ${releases.length} published release(s).`);
+      setMessage("status", `Loaded ${releases.length} published release(s) from ${OWNER}/${REPO}.`);
     } catch (err) { setMessage("status", err.message, true); }
   }
-  async function downloadAsset(asset, releaseUrl) {
-    setMessage("status", `Downloading ${asset.name}...`);
-    try {
-      const response = await fetch(asset.url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/octet-stream", "X-GitHub-Api-Version": "2022-11-28" }
-      });
-      if (!response.ok) throw new Error(`Download HTTP ${response.status}`);
-      const blob = await response.blob();
-      if (blob.type.includes("json")) throw new Error("GitHub returned metadata instead of an archive.");
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = asset.name;
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-      setMessage("status", `Download started: ${asset.name}`);
-    } catch (err) {
-      setMessage("status", `${err.message}. Use the release link while signed in to GitHub: ${releaseUrl}`, true);
+  function downloadAsset(asset, releaseUrl) {
+    const url = asset.browser_download_url;
+    if (!url || !url.startsWith(`https://github.com/${OWNER}/${REPO}/releases/download/`)) {
+      setMessage("status", `No valid public asset URL. Check ${releaseUrl}`, true);
+      return;
     }
+    // Navigate instead of fetch(): public GitHub assets can redirect across origins.
+    const a = document.createElement("a");
+    a.href = url;
+    a.rel = "noopener noreferrer";
+    a.target = "_blank";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setMessage("status", `Opening download: ${asset.name}`);
   }
   function toBase64(bytes) {
     let output = "";
@@ -109,7 +107,7 @@
   }
   async function upload(e) {
     e.preventDefault();
-    if (!token || !$("admin").checked) return setMessage("uploadStatus", "Connect in Admin mode first.", true);
+    if (!token || !$("admin").checked) return setMessage("uploadStatus", "Connect with an admin write token first.", true);
     const file = $("archive").files[0];
     if (!file) return setMessage("uploadStatus", "Choose an archive.", true);
     if (!EXTS.some((ext) => file.name.toLowerCase().endsWith(ext))) return setMessage("uploadStatus", "Unsupported archive extension.", true);
