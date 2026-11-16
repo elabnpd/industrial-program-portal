@@ -1,18 +1,59 @@
 'use strict';
-const OWNER='elabnpd', REPO='industrial-program-storage';
-const API=`https://api.github.com/repos/${OWNER}/${REPO}`;
-const $=id=>document.getElementById(id);
-let token='',releases=[];
-const ARCHIVE=/\.(zip|rar|7z|tar|tar\.gz|tgz)$/i;
-const TAG=/^(.+)-([0-9]+W[0-9]+S)-(HMI|PLC)-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/i;
-function setStatus(s){$('status').textContent=s;}
-async function api(path){const response=await fetch(API+path,{headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}});if(!response.ok)throw Error(`GitHub API ${response.status}: ${response.statusText}${response.status===404?' (check repository name and token access)':''}`);return response.json();}
-async function connect(){token=$('token').value.trim();$('token').value='';if(!token){setStatus('Enter a GitHub access token.');return;}try{setStatus('Connecting…');await api('');await load();setStatus('Connected to private repository. Token held in memory only.');}catch(e){token='';releases=[];render();setStatus(e.message);}}
-async function load(){if(!token){setStatus('Connect first.');return;}let items=[];for(let page=1;page<=10;page++){const chunk=await api(`/releases?per_page=100&page=${page}`);items.push(...chunk);if(chunk.length<100)break;}releases=items.filter(r=>!r.draft).map(r=>{const m=TAG.exec(r.tag_name||'');if(!m)return null;return {series:m[1],model:m[2].replace(/(\d+)W(\d+)S/,'$1W+$2S'),type:m[3].toUpperCase(),version:m[4],notes:r.body||'',author:r.author?.login||'Unknown',date:r.published_at||r.created_at,tag:r.tag_name,assets:(r.assets||[]).filter(a=>ARCHIVE.test(a.name)),url:r.html_url};}).filter(Boolean);populateFilters();render();}
-function populateFilters(){for(const [id,key] of [['series','series'],['model','model']]){const select=$(id),current=select.value;select.replaceChildren(new Option(id==='series'?'All series':'All models',''));for(const value of [...new Set(releases.map(r=>r[key]))].sort())select.add(new Option(value,value));select.value=current;}}
-function el(tag,txt,cls){const e=document.createElement(tag);if(txt!==undefined)e.textContent=txt;if(cls)e.className=cls;return e;}
-function versionCompare(a,b){const parts=x=>x.split('-')[0].split('.').map(Number);const x=parts(a),y=parts(b);for(let i=0;i<3;i++){if(x[i]!==y[i])return y[i]-x[i];}return a.localeCompare(b);}
-function render(){const root=$('programs');root.replaceChildren();const q=$('search').value.toLowerCase(),s=$('series').value,m=$('model').value,t=$('type').value;const filtered=releases.filter(r=>(!s||r.series===s)&&(!m||r.model===m)&&(!t||r.type===t)&&[r.series,r.model,r.type,r.version,r.notes,r.tag].join(' ').toLowerCase().includes(q));const groups=new Map();for(const r of filtered){const key=[r.series,r.model,r.type].join('|');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(r);}if(!groups.size){root.append(el('p',token?'No matching published releases.':'Connect to load private releases.'));return;}for(const [key,versions] of [...groups].sort(([a],[b])=>a.localeCompare(b))){versions.sort((a,b)=>versionCompare(a.version,b.version));const card=el('article',undefined,'program');card.append(el('h3',key.replaceAll('|',' / ')));card.append(el('div',`${versions.length} version(s) available`,'meta'));for(const r of versions){const section=el('div',undefined,'release');const heading=el('div');heading.append(el('strong',`v${r.version} `));heading.append(el('span',r===versions[0]?'Latest':'Previous','tag'));section.append(heading);section.append(el('div',`Uploaded by ${r.author} • ${new Date(r.date).toLocaleString()}`,'meta'));section.append(el('p',r.notes||'No upload comments.'));const links=el('div',undefined,'downloads');for(const asset of r.assets){const b=el('button',`Download ${asset.name}`);b.addEventListener('click',()=>downloadAsset(asset));links.append(b);}if(!r.assets.length)links.append(el('span','No supported archive attached.','meta'));const releaseLink=el('a','View GitHub release','button secondary');releaseLink.href=r.url;releaseLink.target='_blank';releaseLink.rel='noopener noreferrer';links.append(releaseLink);section.append(links);card.append(section);}root.append(card);}}
-async function downloadAsset(asset){if(!token){setStatus('Connect first.');return;}try{setStatus(`Downloading ${asset.name}…`);const res=await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases/assets/${asset.id}`,{headers:{Authorization:`Bearer ${token}`,Accept:'application/octet-stream','X-GitHub-Api-Version':'2022-11-28'}});if(!res.ok)throw Error(`Download failed: HTTP ${res.status}`);const contentType=res.headers.get('content-type')||'';if(contentType.includes('application/json'))throw Error('GitHub returned metadata rather than archive data. Open the release in GitHub to download securely.');const blob=await res.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=asset.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);setStatus(`Downloaded ${asset.name}`);}catch(e){setStatus(`${e.message} Use the View GitHub release link as fallback.`);}}
-function prepare(){const s=$('newSeries').value.trim(),m=$('newModel').value.trim(),t=$('newType').value,v=$('newVersion').value.trim().replace(/^v/i,''),notes=$('newComments').value.trim();if(!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(s)||!/^[0-9]+W\+[0-9]+S$/.test(m)||!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)||!notes){$('prepared').textContent='Enter a valid series, model (e.g. 1W+1S), version (e.g. 1.2.0), and upload comments.';return;}const tag=`${s}-${m.replace('+','')}-${t}-v${v}`;const content=`Tag: ${tag}\nRelease title: ${s} / ${m} / ${t} / v${v}\nRelease notes:\n${notes}\n\nAttach one .zip, .rar, .7z, .tar, .tar.gz, or .tgz file.`;$('prepared').textContent=content;navigator.clipboard?.writeText(content).catch(()=>{});}
-$('connect').addEventListener('click',connect);$('disconnect').addEventListener('click',()=>{token='';releases=[];$('token').value='';populateFilters();render();setStatus('Disconnected.');});$('refresh').addEventListener('click',()=>load().catch(e=>setStatus(e.message)));for(const id of ['series','model','type','search'])$(id).addEventListener(id==='search'?'input':'change',render);$('prepare').addEventListener('click',prepare);
+const $ = id => document.getElementById(id);
+let token = '', owner = '', repo = '', releases = [], currentUser = null, canWrite = false;
+const template = `Program-ID: HPN-2W1S-KINCO\nProgram-Name: HPN 2W+1S\nManufacturer: Kinco\nProgram-Type: HMI\nVersion: 1.2.0\nUpload-Comments: Fixed pressure scaling and improved pump alternation.\n\nChanges:\n- Updated pressure display\n- Revised fault reset logic`;
+$('template').textContent = template;
+const status = (message, error=false) => { $('status').textContent = message; $('status').style.color = error ? '#b42318' : '#286044'; };
+function safe(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function api(path, options={}) {
+ const response = await fetch(`https://api.github.com${path}`, { ...options, headers: {Accept:'application/vnd.github+json',Authorization:`Bearer ${token}`,'X-GitHub-Api-Version':'2022-11-28',...(options.headers||{})},cache:'no-store'});
+ if(!response.ok) { let detail='';try{detail=(await response.json()).message||''}catch{} throw new Error(`GitHub API ${response.status}: ${detail}`); }
+ return response.json();
+}
+function metadata(body) {
+ const fields={}; for(const line of (body||'').split(/\r?\n/)){const match=line.match(/^(Program-ID|Program-Name|Manufacturer|Program-Type|Version|Upload-Comments):\s*(.+)$/i);if(match)fields[match[1].toLowerCase()]=match[2].trim();}return fields;
+}
+function entries(){return releases.map(r=>({release:r,fields:metadata(r.body)})).filter(e=>e.fields['program-id']&&e.fields['program-name']&&e.fields['version']);}
+function render(){
+ const q=$('search').value.trim().toLowerCase(), maker=$('manufacturer').value, type=$('type').value;
+ let items=entries().filter(e=>(!maker||e.fields.manufacturer===maker)&&(!type||e.fields['program-type']===type)&&[e.fields['program-name'],e.fields['program-id'],e.fields.version,e.fields['upload-comments'],e.release.body].join(' ').toLowerCase().includes(q));
+ if($('versions').value==='latest'){const seen=new Set();items=items.filter(e=>{const id=e.fields['program-id'];if(seen.has(id))return false;seen.add(id);return true;});}
+ $('count').textContent=`${items.length} release${items.length===1?'':'s'} displayed`;
+ $('programs').innerHTML=items.map(({release:r,fields:f})=>`<article class="program"><div class="row"><h2>${safe(f['program-name'])}</h2><span class="pill">v${safe(f.version)}</span></div><p class="meta">${safe(f.manufacturer)} · ${safe(f['program-type'])} · ${safe(f['program-id'])}</p><p class="comment">${safe(f['upload-comments']||'No upload comments')}</p><p class="meta">Uploaded by ${safe(r.author?.login||'Unknown')} · ${safe(new Date(r.published_at||r.created_at).toLocaleString())}</p><div class="files"><strong>Download files</strong><div>${r.assets?.length?r.assets.map(a=>`<button data-asset="${a.id}">${safe(a.name)} (${(a.size/1048576).toFixed(1)} MB)</button>`).join(''):'No files attached'}</div></div><p><a href="${safe(r.html_url)}" target="_blank" rel="noopener noreferrer">Release details on GitHub ↗</a></p></article>`).join('')||'<p>No matching releases. Ask an administrator to publish a release using the provided metadata template.</p>';
+ $('programs').querySelectorAll('[data-asset]').forEach(button=>button.addEventListener('click',()=>downloadAsset(button.dataset.asset,button)));
+}
+async function downloadAsset(id,button){
+ const old=button.textContent;button.disabled=true;button.textContent='Downloading…';
+ try{
+  // GitHub's authenticated release asset API responds with either a redirect or binary data.
+  const res=await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/assets/${encodeURIComponent(id)}`,{headers:{Authorization:`Bearer ${token}`,Accept:'application/octet-stream','X-GitHub-Api-Version':'2022-11-28'},cache:'no-store'});
+  if(!res.ok)throw new Error(`Download failed: HTTP ${res.status}`);
+  const contentType=res.headers.get('content-type')||'';
+  if(contentType.includes('application/json'))throw new Error('GitHub returned metadata instead of the file. Open the release in GitHub to download it.');
+  const asset=releases.flatMap(r=>r.assets||[]).find(a=>String(a.id)===String(id));
+  const blob=await res.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=asset?.name||'program.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);status('Download started.');
+ }catch(e){status(`${e.message} You can download from the GitHub release page.`,true);}finally{button.disabled=false;button.textContent=old;}
+}
+async function load(){
+ releases=[];for(let page=1;page<=10;page++){const batch=await api(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases?per_page=100&page=${page}`);releases.push(...batch.filter(r=>!r.draft&&!r.prerelease));if(batch.length<100)break;}
+ releases.sort((a,b)=>new Date(b.published_at||b.created_at)-new Date(a.published_at||a.created_at));render();status(`Loaded ${releases.length} published releases. Max 1,000 releases per refresh.`);
+}
+$('connect').addEventListener('click',async()=>{
+ owner=$('owner').value.trim();repo=$('repo').value.trim();token=$('token').value.trim();
+ if(!/^[a-zA-Z0-9-]{1,39}$/.test(owner)||!/^[a-zA-Z0-9._-]+$/.test(repo)||!token){status('Enter a valid owner, repository, and token.',true);return;}
+ $('token').value='';$('connect').disabled=true;status('Connecting to GitHub…');
+ try{
+  currentUser=await api('/user');const data=await api(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+  if(!data.private)throw new Error('This repository is public. A private storage repository is required.');
+  canWrite=Boolean(data.permissions?.push||data.permissions?.admin||data.permissions?.maintain);
+  $('setup').hidden=true;$('dashboard').hidden=false;$('admin').hidden=!canWrite;
+  $('connection').textContent=`Connected: ${currentUser.login}`;$('who').textContent=`Signed in as ${currentUser.login} · ${canWrite?'Administrator / contributor':'Viewer'}`;
+  const repoUrl=`https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  $('githubRepo').href=repoUrl;$('newRelease').href=`${repoUrl}/releases/new`;
+  await load();
+ }catch(e){status(e.message,true);$('setup').hidden=false;$('dashboard').hidden=true;token='';currentUser=null;}finally{$('connect').disabled=false;}
+});
+$('refresh').addEventListener('click',()=>load().catch(e=>status(e.message,true)));
+$('disconnect').addEventListener('click',()=>{token='';owner='';repo='';releases=[];currentUser=null;canWrite=false;$('dashboard').hidden=true;$('setup').hidden=false;$('connection').textContent='Not connected';status('Disconnected.');});
+['search','manufacturer','type','versions'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',render));
+$('copyTemplate').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(template);status('Template copied.');}catch{status('Clipboard unavailable. Copy the template manually.',true);}});
