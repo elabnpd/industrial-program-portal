@@ -301,7 +301,7 @@
     token = entered;
     try {
       // Check repo access. GitHub enforces actual write permissions on upload requests.
-      await api("");
+      await api("https://api.github.com/user");
       adminConnected = true;
       viewerConnected = true;
       $("library").hidden = false;
@@ -314,7 +314,10 @@
       viewerConnected = false;
       $("library").hidden = true;
       $("uploader").hidden = true;
-      setMessage("status", error.message, true);
+      const message = /GitHub 401|Bad credentials/i.test(error.message)
+        ? "GitHub 401: Invalid, expired, or revoked admin token. Create a new fine-grained token and grant access to industrial-program-storage."
+        : error.message;
+      setMessage("status", message, true);
     }
   }
 
